@@ -21,14 +21,14 @@ export const menuLinks: HeaderMenuLink[] = [
     href: "/",
   },
   {
-    label: "Mint NFT",
-    href: "/mint",
-    icon: <span className="text-sm">🎨</span>,
+    label: "Buy Tokens",
+    href: "/buy-tokens",
+    icon: <span className="text-sm">🤑</span>,
   },
   {
-    label: "Marketplace",
-    href: "/marketplace",
-    icon: <span className="text-sm">🏪</span>,
+    label: "Streamers",
+    href: "/streamers",
+    icon: <span className="text-sm">🎥</span>,
   },
   {
     label: "Debug Contracts",
@@ -50,8 +50,8 @@ export const HeaderMenuLinks = () => {
               href={href}
               passHref
               className={`${
-                isActive ? "bg-secondary shadow-md" : ""
-              } hover:bg-secondary hover:shadow-md focus:!bg-secondary active:!text-neutral py-1.5 px-3 text-sm rounded-full gap-2 grid grid-flow-col`}
+                isActive ? "bg-neon-purple text-black border-2 border-white" : "bg-black text-white border-2 border-neon-purple"
+              } hover:bg-neon-purple hover:text-white focus:bg-neon-purple focus:text-white active:bg-neon-purple active:text-white py-2 px-4 text-sm uppercase font-bold rounded-none gap-2 grid grid-flow-col transition-colors`}
             >
               {icon}
               <span>{label}</span>
@@ -76,37 +76,41 @@ export const Header = () => {
   });
 
   return (
-    <div className="sticky lg:static top-0 navbar bg-base-100 min-h-0 shrink-0 justify-between z-20 shadow-md shadow-secondary px-0 sm:px-2">
-      <div className="navbar-start w-auto lg:w-1/2">
-        <details className="dropdown" ref={burgerMenuRef}>
-          <summary className="ml-1 btn btn-ghost lg:hidden hover:bg-transparent">
-            <Bars3Icon className="h-1/2" />
-          </summary>
-          <ul
-            className="menu menu-compact dropdown-content mt-3 p-2 shadow-sm bg-base-100 rounded-box w-52"
-            onClick={() => {
-              burgerMenuRef?.current?.removeAttribute("open");
-            }}
-          >
+    <div className="sticky top-0 bg-black text-white font-mono border-b-4 border-neon-purple z-20 px-0 sm:px-2">
+      <div className="container mx-auto flex justify-between items-center py-4">
+        <div className="flex items-center gap-2">
+          <Link href="/" passHref className="flex items-center gap-2 ml-4 shrink-0">
+            <div className="flex relative w-10 h-10">
+              <Image alt="stream.fun logo" className="cursor-pointer" fill src="/logo.svg" />
+            </div>
+            <div className="flex flex-col">
+              <span className="font-extrabold leading-tight uppercase text-2xl">
+                stream<span className="text-neon-purple">.</span>fun
+              </span>
+              <span className="text-xs uppercase">Punk Token Streaming</span>
+            </div>
+          </Link>
+          <ul className="hidden lg:flex lg:flex-nowrap menu menu-horizontal px-1 gap-2">
             <HeaderMenuLinks />
           </ul>
-        </details>
-        <Link href="/" passHref className="hidden lg:flex items-center gap-2 ml-4 mr-6 shrink-0">
-          <div className="flex relative w-10 h-10">
-            <Image alt="SE2 logo" className="cursor-pointer" fill src="/logo.svg" />
-          </div>
-          <div className="flex flex-col">
-            <span className="font-bold leading-tight">Stream NFT</span>
-            <span className="text-xs">Kadena NFT Marketplace</span>
-          </div>
-        </Link>
-        <ul className="hidden lg:flex lg:flex-nowrap menu menu-horizontal px-1 gap-2">
-          <HeaderMenuLinks />
-        </ul>
-      </div>
-      <div className="navbar-end grow mr-4">
-        <RainbowKitCustomConnectButton />
-        {isLocalNetwork && <FaucetButton />}
+        </div>
+        <div className="flex items-center gap-4 mr-4">
+          <RainbowKitCustomConnectButton />
+          {isLocalNetwork && <FaucetButton />}
+          <details className="dropdown lg:hidden" ref={burgerMenuRef}>
+            <summary className="btn btn-ghost hover:bg-neon-purple hover:text-white p-2">
+              <Bars3Icon className="h-6 w-6" />
+            </summary>
+            <ul
+              className="menu dropdown-content mt-3 p-2 bg-black border-2 border-neon-purple w-52 rounded-none"
+              onClick={() => {
+                burgerMenuRef?.current?.removeAttribute("open");
+              }}
+            >
+              <HeaderMenuLinks />
+            </ul>
+          </details>
+        </div>
       </div>
     </div>
   );
