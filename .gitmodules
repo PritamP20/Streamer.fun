@@ -1,0 +1,3 @@
+[submodule "streamfun-marketplace/lib/openzeppelin-contracts"]
+	path = streamfun-marketplace/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
