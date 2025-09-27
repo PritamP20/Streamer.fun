@@ -26,13 +26,12 @@ function FractionalCard({ tokenId }: { tokenId: bigint }) {
   const { data: streamNFTContract } = useScaffoldContract({ contractName: "StreamNFT" });
 
   const [hoursToBuy, setHoursToBuy] = useState<string>("1");
-  const [pricePerHour, setPricePerHour] = useState<string>("");
 
-  // Fractional data: streamer, pricePerHour, isActive, totalHoursSold, remainingHours
-  const { data: fractionalData } = useReadContract({
+  // Fractional view: isActive, base, multiplier, totalSold, remaining, nextPrice
+  const { data: fractionalView } = useReadContract({
     address: marketplaceContract?.address,
     abi: marketplaceContract?.abi,
-    functionName: "getFractionalData",
+    functionName: "getFractionalView",
     args: [tokenId],
   });
 
@@ -48,46 +47,54 @@ function FractionalCard({ tokenId }: { tokenId: bigint }) {
   const { writeContract, data: txHash, isPending } = useWriteContract();
   const { isLoading: isConfirming } = useWaitForTransactionReceipt({ hash: txHash });
 
+  // Precompute cost for buying 1 hour
+  const { data: buyCost } = useReadContract({
+    address: marketplaceContract?.address,
+    abi: marketplaceContract?.abi,
+    functionName: "getBuyCost",
+    args: [tokenId, 1n],
+  });
+
   const onListFractional = async () => {
-    if (!pricePerHour) {
-      notification.error("Enter price per hour");
-      return;
-    }
     try {
-      const wei = parseEther(pricePerHour);
       await writeContract({
         address: marketplaceContract?.address,
         abi: marketplaceContract?.abi,
         functionName: "listFractional",
-        args: [tokenId, wei],
+        args: [tokenId],
       });
     } catch (e) {
       notification.error("Listing failed");
-      // eslint-disable-next-line no-console
       console.error(e);
     }
   };
 
   const onBuyHours = async () => {
-    if (!fractionalData) return;
-    const [_streamer, pricePerHourWei, isActive] = fractionalData as unknown as [string, bigint, boolean, bigint, bigint];
+    if (!fractionalView) return;
+    const isActive = (fractionalView as any)[0] === true;
     if (!isActive) {
       notification.error("This stream is not listed fractionally");
       return;
     }
     const hours = BigInt(Math.max(1, Number(hoursToBuy || "1")));
-    const total = hours * (pricePerHourWei as bigint);
     try {
+      if (hours !== 1n) {
+        notification.info("Currently buy 1 hour at a time for accurate pricing.");
+      }
+      const value = (buyCost as any)?.[0] as bigint | undefined;
+      if (!value) {
+        notification.error("Could not fetch cost. Try again.");
+        return;
+      }
       await writeContract({
         address: marketplaceContract?.address,
         abi: marketplaceContract?.abi,
         functionName: "buyHours",
-        args: [tokenId, hours],
-        value: total,
+        args: [tokenId, 1n],
+        value,
       });
     } catch (e) {
       notification.error("Purchase failed");
-      // eslint-disable-next-line no-console
       console.error(e);
     }
   };
@@ -96,21 +103,21 @@ function FractionalCard({ tokenId }: { tokenId: bigint }) {
     return <div className="text-xs text-error">Marketplace contract not configured. Deploy and regenerate deployedContracts.ts.</div>;
   }
 
-  // Render fractional section
-  const isActive = !!fractionalData && (fractionalData as any)[2] === true;
-  const priceWei = (!!fractionalData && (fractionalData as any)[1]) as bigint | undefined;
-  const remainingHours = (!!fractionalData && (fractionalData as any)[4]) as bigint | undefined;
+  const isActive = !!fractionalView && (fractionalView as any)[0] === true;
+  const nextPriceWei = (!!fractionalView && (fractionalView as any)[5]) as bigint | undefined;
+  const remainingHours = (!!fractionalView && (fractionalView as any)[4]) as bigint | undefined;
 
   return (
     <div className="mt-4 border-t pt-3">
-      {isActive && priceWei ? (
+      {isActive && nextPriceWei && (remainingHours ?? 0n) > 0n ? (
         <div className="flex flex-col gap-2">
-          <div className="text-sm">Price/hour: {formatEther(priceWei)} KDA</div>
+          <div className="text-sm">Next hour price: {formatEther(nextPriceWei)} KDA</div>
           <div className="text-sm">Remaining: {remainingHours?.toString()} h</div>
           <div className="flex gap-2">
             <input
               type="number"
               min={1}
+              max={1}
               className="input input-bordered input-sm w-24"
               value={hoursToBuy}
               onChange={e => setHoursToBuy(e.target.value)}
@@ -120,25 +127,23 @@ function FractionalCard({ tokenId }: { tokenId: bigint }) {
               onClick={onBuyHours}
               disabled={isPending || isConfirming}
             >
-              {isPending || isConfirming ? "Processing..." : "Buy hours"}
+              {isPending || isConfirming ? "Processing..." : "Buy 1 hour"}
             </button>
           </div>
         </div>
       ) : isOwner ? (
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min={0}
-            step={0.001}
-            placeholder="Price/hour (KDA)"
-            className="input input-bordered input-sm"
-            value={pricePerHour}
-            onChange={e => setPricePerHour(e.target.value)}
-          />
-          <button className="btn btn-outline btn-sm" onClick={onListFractional} disabled={!pricePerHour || isPending}>
+        <div className="flex flex-col gap-2">
+          {isActive && (remainingHours ?? 0n) === 0n ? (
+            <div className="text-xs">Sold out. You can list the NFT for full sale:</div>
+          ) : (
+            <div className="text-xs">Not fractionally listed. You can list now:</div>
+          )}
+          <button className="btn btn-outline btn-sm" onClick={onListFractional} disabled={isPending}>
             {isPending ? "Listing..." : "List Fractional"}
           </button>
         </div>
+      ) : isActive && (remainingHours ?? 0n) === 0n ? (
+        <div className="text-xs text-warning">Sold out</div>
       ) : (
         <div className="text-xs text-gray-500">Not fractionally listed</div>
       )}
@@ -172,10 +177,24 @@ export default function Marketplace() {
     }));
   }, [activeInfos]);
 
+  const formatTimeRemaining = (hours: bigint) => {
+    const h = Number(hours);
+    if (h < 24) {
+      return `${h}h`;
+    } else {
+      const days = Math.floor(h / 24);
+      const remainingHours = h % 24;
+      return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+    }
+  };
+
+  const truncateAddress = (address: string) => {
+    return `${address.slice(0, 6)}...${address.slice(-4)}`;
+  };
+
   return (
     <div className="flex items-center flex-col grow pt-10">
       <div className="px-5 max-w-6xl w-full">
-        <h1 className="text-center text-4xl font-bold mb-8">Marketplace</h1>
 
         {nfts.length === 0 ? (
           <div className="text-center py-12">
@@ -185,29 +204,63 @@ export default function Marketplace() {
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {nfts.map(nft => (
               <div key={nft.tokenId.toString()} className="card bg-base-100 shadow-xl">
-                <figure>
+                {/* Square Image Container */}
+                <figure className="aspect-square">
                   <img
                     src={nft.imageURI}
                     alt={nft.name}
-                    className="w-full h-48 object-cover"
+                    className="w-full h-full object-cover"
                     onError={e => {
                       (e.currentTarget as HTMLImageElement).src =
-                        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='200'%3E%3Crect width='300' height='200' fill='%23ddd'/%3E%3Ctext x='150' y='100' font-size='18' text-anchor='middle' dy='.3em'%3EImage Not Available%3C/text%3E%3C/svg%3E";
+                        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'%3E%3Crect width='400' height='400' fill='%23f3f4f6'/%3E%3Ccircle cx='200' cy='160' r='32' fill='%23d1d5db'/%3E%3Cpath d='M120 280h160l-32-64-32 48-32-24z' fill='%23d1d5db'/%3E%3Ctext x='200' y='320' font-size='14' text-anchor='middle' fill='%23666'%3ENo Image%3C/text%3E%3C/svg%3E";
                     }}
                   />
+                  {/* Status Badge */}
+                  <div className="absolute top-3 right-3">
+                    {nft.isExpired ? (
+                      <div className="badge badge-error">Expired</div>
+                    ) : (
+                      <div className="badge badge-success">Active</div>
+                    )}
+                  </div>
                 </figure>
+
                 <div className="card-body">
-                  <h2 className="card-title">
+                  <h2 className="card-title text-lg">
                     {nft.name}
-                    {nft.isExpired && <div className="badge badge-error">Expired</div>}
                   </h2>
-                  <p className="text-sm text-gray-600 line-clamp-3">{nft.description}</p>
-                  <div className="text-xs text-gray-500 mt-2">
-                    <p>Token ID: {nft.tokenId.toString()}</p>
-                    <p>Expires: {new Date(Number(nft.expiration) * 1000).toLocaleString()}</p>
+                  
+                  <p className="text-sm text-gray-600 line-clamp-2">{nft.description}</p>
+                  
+                  {/* Details */}
+                  <div className="text-xs text-gray-500 mt-2 space-y-1">
+                    <div className="flex justify-between">
+                      <span>Token ID:</span>
+                      <span className="font-mono">#{nft.tokenId.toString()}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Time Left:</span>
+                      <span className="badge badge-outline badge-sm">
+                        {formatTimeRemaining(nft.remainingHours)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Owner:</span>
+                      <span className="font-mono">{truncateAddress(nft.currentOwner)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Expires:</span>
+                      <span>
+                        {new Date(Number(nft.expiration) * 1000).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric'
+                        })}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Fractional buy/list UI */}

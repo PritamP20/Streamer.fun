@@ -26,13 +26,18 @@ export const menuLinks: HeaderMenuLink[] = [
     icon: <span className="text-sm">📺</span>,
   },
   {
-    label: "Buy Tokens",
-    href: "/buy-tokens",
+    label: "Streams",
+    href: "/streams",
+    icon: <span className="text-sm">🔴</span>,
+  },
+  {
+    label: "Market Place",
+    href: "/marketplace",
     icon: <span className="text-sm">🤑</span>,
   },
   {
-    label: "Streamers",
-    href: "/streamers",
+    label: "Mint",
+    href: "/mint",
     icon: <span className="text-sm">🎥</span>,
   },
 ];

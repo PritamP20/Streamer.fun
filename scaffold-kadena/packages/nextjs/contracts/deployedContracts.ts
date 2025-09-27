@@ -7,7 +7,7 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 const deployedContracts = {
   "5922": {
     "StreamNFT": {
-      "address": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
+      "address": "0x9A676e781A523b5d0C0e43731313A708CB607508",
       "abi": [
         {
           "inputs": [],
@@ -999,7 +999,7 @@ const deployedContracts = {
       ]
     },
     "Marketplace": {
-      "address": "0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82",
+      "address": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
       "abi": [
         {
           "inputs": [
@@ -1011,6 +1011,28 @@ const deployedContracts = {
           ],
           "stateMutability": "nonpayable",
           "type": "constructor"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "owner",
+              "type": "address"
+            }
+          ],
+          "name": "OwnableInvalidOwner",
+          "type": "error"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "account",
+              "type": "address"
+            }
+          ],
+          "name": "OwnableUnauthorizedAccount",
+          "type": "error"
         },
         {
           "inputs": [],
@@ -1031,12 +1053,6 @@ const deployedContracts = {
               "internalType": "address",
               "name": "streamer",
               "type": "address"
-            },
-            {
-              "indexed": false,
-              "internalType": "uint256",
-              "name": "pricePerHour",
-              "type": "uint256"
             }
           ],
           "name": "FractionalListingCreated",
@@ -1116,6 +1132,57 @@ const deployedContracts = {
           "inputs": [
             {
               "indexed": true,
+              "internalType": "address",
+              "name": "previousOwner",
+              "type": "address"
+            },
+            {
+              "indexed": true,
+              "internalType": "address",
+              "name": "newOwner",
+              "type": "address"
+            }
+          ],
+          "name": "OwnershipTransferred",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
+            {
+              "indexed": false,
+              "internalType": "address",
+              "name": "oracle",
+              "type": "address"
+            }
+          ],
+          "name": "PriceOracleUpdated",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
+            {
+              "indexed": false,
+              "internalType": "uint256",
+              "name": "basePricePerHour",
+              "type": "uint256"
+            },
+            {
+              "indexed": false,
+              "internalType": "uint256",
+              "name": "multiplierBps",
+              "type": "uint256"
+            }
+          ],
+          "name": "PricingUpdated",
+          "type": "event"
+        },
+        {
+          "anonymous": false,
+          "inputs": [
+            {
+              "indexed": true,
               "internalType": "uint256",
               "name": "tokenId",
               "type": "uint256"
@@ -1135,6 +1202,19 @@ const deployedContracts = {
           ],
           "name": "Sold",
           "type": "event"
+        },
+        {
+          "inputs": [],
+          "name": "basePricePerHour",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
         },
         {
           "inputs": [
@@ -1209,11 +1289,6 @@ const deployedContracts = {
               "type": "address"
             },
             {
-              "internalType": "uint256",
-              "name": "pricePerHour",
-              "type": "uint256"
-            },
-            {
               "internalType": "bool",
               "name": "isActive",
               "type": "bool"
@@ -1235,6 +1310,35 @@ const deployedContracts = {
               "internalType": "uint256[]",
               "name": "",
               "type": "uint256[]"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "tokenId",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "hoursAmount",
+              "type": "uint256"
+            }
+          ],
+          "name": "getBuyCost",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "totalCost",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nextHourPrice",
+              "type": "uint256"
             }
           ],
           "stateMutability": "view",
@@ -1287,6 +1391,50 @@ const deployedContracts = {
               "type": "uint256"
             }
           ],
+          "name": "getFractionalView",
+          "outputs": [
+            {
+              "internalType": "bool",
+              "name": "isActive",
+              "type": "bool"
+            },
+            {
+              "internalType": "uint256",
+              "name": "base",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "multiplier",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "totalSold",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "remaining",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nextPrice",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "tokenId",
+              "type": "uint256"
+            }
+          ],
           "name": "getListing",
           "outputs": [
             {
@@ -1311,7 +1459,45 @@ const deployedContracts = {
               "type": "uint256"
             }
           ],
+          "name": "getNextHourPrice",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "tokenId",
+              "type": "uint256"
+            }
+          ],
           "name": "getRemainingHours",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "tokenId",
+              "type": "uint256"
+            }
+          ],
+          "name": "getRemainingHoursByTime",
           "outputs": [
             {
               "internalType": "uint256",
@@ -1432,11 +1618,6 @@ const deployedContracts = {
               "internalType": "uint256",
               "name": "tokenId",
               "type": "uint256"
-            },
-            {
-              "internalType": "uint256",
-              "name": "pricePerHour",
-              "type": "uint256"
             }
           ],
           "name": "listFractional",
@@ -1470,6 +1651,19 @@ const deployedContracts = {
         },
         {
           "inputs": [],
+          "name": "multiplierBps",
+          "outputs": [
+            {
+              "internalType": "uint256",
+              "name": "",
+              "type": "uint256"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [],
           "name": "nft",
           "outputs": [
             {
@@ -1479,6 +1673,91 @@ const deployedContracts = {
             }
           ],
           "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [],
+          "name": "owner",
+          "outputs": [
+            {
+              "internalType": "address",
+              "name": "",
+              "type": "address"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [],
+          "name": "priceOracle",
+          "outputs": [
+            {
+              "internalType": "address",
+              "name": "",
+              "type": "address"
+            }
+          ],
+          "stateMutability": "view",
+          "type": "function"
+        },
+        {
+          "inputs": [],
+          "name": "renounceOwnership",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "_base",
+              "type": "uint256"
+            }
+          ],
+          "name": "setBasePricePerHour",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "uint256",
+              "name": "_bps",
+              "type": "uint256"
+            }
+          ],
+          "name": "setMultiplierBps",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "_oracle",
+              "type": "address"
+            }
+          ],
+          "name": "setPriceOracle",
+          "outputs": [],
+          "stateMutability": "nonpayable",
+          "type": "function"
+        },
+        {
+          "inputs": [
+            {
+              "internalType": "address",
+              "name": "newOwner",
+              "type": "address"
+            }
+          ],
+          "name": "transferOwnership",
+          "outputs": [],
+          "stateMutability": "nonpayable",
           "type": "function"
         },
         {

@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
 import { useScaffoldContract } from "~~/hooks/scaffold-eth";
 import { notification } from "~~/utils/scaffold-eth";
+import { io, Socket } from "socket.io-client";
 
 export default function GoLivePage() {
   const { address } = useAccount();
@@ -18,6 +19,27 @@ export default function GoLivePage() {
 
   const { data: streamNFT } = useScaffoldContract({ contractName: "StreamNFT" });
   const { data: marketplace } = useScaffoldContract({ contractName: "Marketplace" });
+
+  // Interaction overlay
+  const [interactBanner, setInteractBanner] = useState<string | null>(null);
+  const overlaySocketRef = useRef<Socket | null>(null);
+  useEffect(() => {
+    const url = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4001";
+    const s = io(url, { transports: ["websocket", "polling"] });
+    overlaySocketRef.current = s;
+    s.on("connect", () => {
+      s.emit("join", { roomId: selectedTokenId || "lobby", author: address || "streamer" });
+    });
+    s.on("interact", (payload: any) => {
+      const who = payload?.author || payload?.address || "viewer";
+      setInteractBanner(String(who));
+      setTimeout(() => setInteractBanner(null), 6000);
+    });
+    return () => {
+      s.disconnect();
+      overlaySocketRef.current = null;
+    };
+  }, [selectedTokenId, address]);
 
   // Active tokens by this creator
   const { data: activeInfos } = useReadContract({
@@ -238,6 +260,13 @@ export default function GoLivePage() {
                   muted={usingWebcam}
                 />
               )}
+              {interactBanner && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="bg-neon-purple text-black font-extrabold p-4 border-4 border-black text-center uppercase">
+                    {interactBanner} wants to interact!
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Token panel under the player */}
@@ -383,7 +412,6 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
   );
 }
 
-import { io, Socket } from "socket.io-client";
 
 function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }) {
   type ChatMsg = { id: string; author: string; text: string; at: number };
@@ -395,10 +423,10 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
 
   // marketplace data for token
   const { data: marketplace } = useScaffoldContract({ contractName: "Marketplace" });
-  const { data: fractional } = useReadContract({
+  const { data: fractionalView } = useReadContract({
     address: marketplace?.address,
     abi: marketplace?.abi,
-    functionName: "getFractionalData",
+    functionName: "getFractionalView",
     args: tokenId ? [BigInt(tokenId)] : undefined,
   });
   const { data: userHours } = useReadContract({
@@ -411,6 +439,14 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
   const [buyHours, setBuyHours] = useState<string>("1");
   const { writeContract: writeBuy, data: buyHash, isPending: isBuying } = useWriteContract();
   const { isLoading: isBuyConfirming } = useWaitForTransactionReceipt({ hash: buyHash });
+
+  // Precompute cost for buying 1 hour
+  const { data: buyCost } = useReadContract({
+    address: marketplace?.address,
+    abi: marketplace?.abi,
+    functionName: "getBuyCost",
+    args: tokenId ? [BigInt(tokenId), 1n] : undefined,
+  });
 
   // Connect to socket.io
   useEffect(() => {
@@ -462,16 +498,28 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
   };
 
   const onBuyHours = async () => {
-    if (!fractional || !tokenId) return;
-    const pricePerHour: bigint = (fractional as any)[1] as bigint; // wei
+    if (!fractionalView || !tokenId) return;
+    const isActive = (fractionalView as any)[0] === true;
+    if (!isActive) {
+      notification.error("Not listed fractionally");
+      return;
+    }
     const hours = BigInt(Math.max(1, Number(buyHours || "1")));
     try {
+      if (hours !== 1n) {
+        notification.info("Currently buy 1 hour at a time for accurate pricing.");
+      }
+      const value = (buyCost as any)?.[0] as bigint | undefined;
+      if (!value) {
+        notification.error("Could not fetch cost. Try again.");
+        return;
+      }
       await writeBuy({
         address: marketplace?.address,
         abi: marketplace?.abi,
         functionName: "buyHours",
-        args: [BigInt(tokenId), hours],
-        value: hours * pricePerHour,
+        args: [BigInt(tokenId), 1n],
+        value,
       });
     } catch (e) {
       notification.error("Buy hours failed");
@@ -490,7 +538,9 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
         {tokenId && (
           <div className="flex items-center gap-2">
             {(userHours as bigint | undefined) && (userHours as bigint) > 0n ? (
-              <button className="btn btn-primary btn-sm">Interact ({(userHours as bigint).toString()} h)</button>
+              <button className="btn btn-primary btn-sm" onClick={() => socketRef.current?.emit("interact", { roomId, author: address })}>
+                Interact ({(userHours as bigint).toString()} h)
+              </button>
             ) : (
               <div className="flex items-center gap-2">
                 <input
