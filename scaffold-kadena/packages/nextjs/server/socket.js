@@ -61,6 +61,10 @@ io.on("connection", socket => {
       if (userAddress && streamInfo.streamerAddress === userAddress) {
         isStreamer = true;
       }
+      // Notify streamer that a viewer joined (if the joiner is not the streamer)
+      if (streamInfo.isLive && socket.id !== streamInfo.streamerId) {
+        io.to(streamInfo.streamerId).emit("viewer-joined", { viewerId: socket.id });
+      }
     }
 
     // Send viewer count to all in room
@@ -117,6 +121,16 @@ io.on("connection", socket => {
     // Send stream info to all in room
     io.to(room).emit("stream-info", activeStreams.get(room));
 
+    // Tell the streamer about any currently connected viewers so offers can be sent
+    const viewers = roomViewers.get(room);
+    if (viewers) {
+      viewers.forEach(vId => {
+        if (vId !== socket.id) {
+          io.to(socket.id).emit("viewer-joined", { viewerId: vId });
+        }
+      });
+    }
+
     // Send system message
     io.to(room).emit("message", {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -149,6 +163,41 @@ io.on("connection", socket => {
 
       console.log(`Stream stopped in room ${room}`);
     }
+  });
+
+  // Start a YouTube-based stream
+  socket.on("start-youtube", ({ roomId, youtubeId, title }) => {
+    const room = String(roomId || currentRoom);
+    const userInfo = socketToUser.get(socket.id);
+    if (!userInfo || !youtubeId) return;
+
+    activeStreams.set(room, {
+      streamerId: socket.id,
+      streamerAddress: userInfo.address,
+      streamerName: userInfo.author,
+      isLive: true,
+      type: 'youtube',
+      youtubeId,
+      title: title || `YouTube by ${userInfo.author}`,
+      startedAt: Date.now(),
+    });
+
+    isStreamer = true;
+
+    io.to(room).emit("stream-started", {
+      streamerName: userInfo.author,
+      title: title || `YouTube by ${userInfo.author}`,
+      type: 'youtube',
+      youtubeId,
+    });
+    io.to(room).emit("stream-info", activeStreams.get(room));
+
+    io.to(room).emit("message", {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      author: "system",
+      text: `🔴 ${userInfo.author} started a YouTube stream`,
+      at: Date.now(),
+    });
   });
 
   // WebRTC signaling - Offer (streamer to viewers)
@@ -186,6 +235,28 @@ io.on("connection", socket => {
     }
   });
 
+  // Query multiple stream statuses without joining rooms
+  socket.on("get-stream-status", (payload, cb) => {
+    try {
+      const roomIds = Array.isArray(payload?.roomIds) ? payload.roomIds : [];
+      const result = roomIds.map(rid => {
+        const key = String(rid);
+        const info = activeStreams.get(key);
+        const viewers = roomViewers.get(key);
+        return {
+          roomId: key,
+          isLive: !!(info && info.isLive),
+          viewerCount: viewers ? viewers.size : 0,
+          title: info ? info.title : null,
+          startedAt: info ? info.startedAt : null,
+        };
+      });
+      if (typeof cb === "function") cb({ ok: true, data: result });
+    } catch (e) {
+      if (typeof cb === "function") cb({ ok: false, error: String(e?.message || e) });
+    }
+  });
+
   // Handle disconnect
   socket.on("disconnect", () => {
     console.log(`User disconnected: ${socket.id}`);
@@ -215,6 +286,11 @@ io.on("connection", socket => {
           text: `📺 ${userInfo?.author || 'Streamer'} left the stream`,
           at: Date.now(),
         });
+      }
+
+      // If this was a viewer and the room has an active stream, notify the streamer
+      if (streamInfo && socket.id !== streamInfo.streamerId) {
+        io.to(streamInfo.streamerId).emit("viewer-left", { viewerId: socket.id });
       }
 
       // Send leave message if user was identified

@@ -5,12 +5,14 @@ import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteCont
 import { useScaffoldContract } from "~~/hooks/scaffold-eth";
 import { notification } from "~~/utils/scaffold-eth";
 import { io, Socket } from "socket.io-client";
+import { useSearchParams } from "next/navigation";
 
 export default function GoLivePage() {
   const { address } = useAccount();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [usingWebcam, setUsingWebcam] = useState(false);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<string>("");
 
   // mode: webcam | youtube | stream (NEW)
@@ -18,10 +20,14 @@ export default function GoLivePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
 
   // NEW: WebRTC streaming state
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false); // streamer broadcasting (webrtc)
+  const [isLive, setIsLive] = useState(false); // stream live status for viewers
+  const [liveType, setLiveType] = useState<"webrtc" | "youtube" | null>(null);
+  const [liveYoutubeId, setLiveYoutubeId] = useState<string | null>(null);
   const [viewerCount, setViewerCount] = useState(0);
   const streamSocketRef = useRef<Socket | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
 
   const { data: streamNFT } = useScaffoldContract({ contractName: "StreamNFT" });
   const { data: marketplace } = useScaffoldContract({ contractName: "Marketplace" });
@@ -30,13 +36,31 @@ export default function GoLivePage() {
   const [interactBanner, setInteractBanner] = useState<string | null>(null);
   const overlaySocketRef = useRef<Socket | null>(null);
 
-  // NEW: WebRTC configuration
-  const rtcConfig = {
-    iceServers: [
+  // NEW: WebRTC configuration (with optional TURN via env)
+  const rtcConfig = (() => {
+    const servers: RTCIceServer[] = [
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' }
-    ]
-  };
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ];
+    const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    const turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
+    const turnPass = process.env.NEXT_PUBLIC_TURN_PASSWORD;
+    if (turnUrl && turnUrl.length > 0) {
+      servers.push({ urls: turnUrl, username: turnUser, credential: turnPass });
+    }
+    return { iceServers: servers } as RTCConfiguration;
+  })();
+
+  // Pick tokenId from query string, and default to stream mode (for viewers)
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const qid = searchParams?.get("tokenId");
+    if (qid) {
+      setSelectedTokenId(qid);
+      setStreamMode("stream");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Existing overlay socket (unchanged)
   useEffect(() => {
@@ -57,9 +81,9 @@ export default function GoLivePage() {
     };
   }, [selectedTokenId, address]);
 
-  // NEW: WebRTC streaming socket
+  // NEW: Streaming socket (both streamer and viewer, any mode)
   useEffect(() => {
-    if (streamMode !== "stream" || !selectedTokenId) return;
+    if (!selectedTokenId) return;
 
     const url = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4001";
     streamSocketRef.current = io(url, { transports: ["websocket", "polling"] });
@@ -69,9 +93,35 @@ export default function GoLivePage() {
       console.log("Connected to streaming server");
       socket.emit("join", { 
         roomId: selectedTokenId, 
-        author: address?.slice(0, 8) || "streamer",
+        author: address?.slice(0, 8) || "user",
         userAddress: address 
       });
+    });
+
+    // Live status updates
+    socket.on("stream-info", (info: any) => {
+      setIsLive(!!info?.isLive);
+      setLiveType(info?.type || (info?.isLive ? "webrtc" : null));
+      setLiveYoutubeId(info?.youtubeId || null);
+      // For viewers, switch to youtube mode automatically if stream is youtube
+      if (info?.type === "youtube" && !isCreator) {
+        setStreamMode("youtube");
+      }
+    });
+    socket.on("stream-started", (payload: any) => {
+      setIsLive(true);
+      if (payload?.type === "youtube") {
+        setLiveType("youtube");
+        setLiveYoutubeId(payload?.youtubeId || null);
+        if (!isCreator) setStreamMode("youtube");
+      } else {
+        setLiveType("webrtc");
+      }
+    });
+    socket.on("stream-stopped", () => {
+      setIsLive(false);
+      setLiveType(null);
+      setLiveYoutubeId(null);
     });
 
     socket.on("viewer-count", (count: number) => {
@@ -79,25 +129,137 @@ export default function GoLivePage() {
     });
 
     // WebRTC signaling
+    // For streamer: accept answers from viewers
     socket.on("webrtc-answer", async (data: { answer: RTCSessionDescriptionInit; from: string }) => {
-      const peerConnection = peerConnectionsRef.current.get(data.from);
-      if (peerConnection) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        // Drain any pending ICE candidates for this peer now that remoteDescription is set
+        const pend = pendingIceRef.current.get(data.from);
+        if (pend && pend.length) {
+          for (const c of pend) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+          }
+          pendingIceRef.current.delete(data.from);
+        }
       }
     });
 
+    // For both: ICE candidates
     socket.on("webrtc-ice-candidate", async (data: { candidate: RTCIceCandidateInit; from: string }) => {
-      const peerConnection = peerConnectionsRef.current.get(data.from);
-      if (peerConnection) {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      const pc = peerConnectionsRef.current.get(data.from);
+      if (pc) {
+        if (pc.remoteDescription) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+        } else {
+          const arr = pendingIceRef.current.get(data.from) || [];
+          arr.push(data.candidate);
+          pendingIceRef.current.set(data.from, arr);
+        }
+      } else {
+        // No PC yet — buffer by from id
+        const arr = pendingIceRef.current.get(data.from) || [];
+        arr.push(data.candidate);
+        pendingIceRef.current.set(data.from, arr);
+      }
+    });
+
+    // Streamer: create offer for new viewer
+    socket.on('viewer-joined', async ({ viewerId }: { viewerId: string }) => {
+      try {
+        if (!isStreaming) return; // only streamer should act
+        await offerToViewer(viewerId);
+      } catch (e) {
+        console.error('offerToViewer failed', e);
+      }
+    });
+
+    // Streamer: clean up when viewer leaves
+    socket.on('viewer-left', ({ viewerId }: { viewerId: string }) => {
+      const pc = peerConnectionsRef.current.get(viewerId);
+      if (pc) {
+        try { pc.close(); } catch {}
+      }
+      peerConnectionsRef.current.delete(viewerId);
+    });
+
+    // For viewer: receive offer from streamer, create answer and attach remote stream
+    socket.on("webrtc-offer", async (data: { offer: RTCSessionDescriptionInit; from: string }) => {
+      try {
+        // If we're the streamer, ignore incoming offers
+        if (isStreaming) return;
+
+        const fromId = data.from;
+        const pc = new RTCPeerConnection(rtcConfig);
+        peerConnectionsRef.current.set(fromId, pc);
+
+        // Collect remote tracks
+        const remoteStream = new MediaStream();
+        remoteStreamRef.current = remoteStream;
+
+        pc.ontrack = (event: RTCTrackEvent) => {
+          event.streams[0]?.getTracks().forEach(t => remoteStream.addTrack(t));
+          if (videoRef.current) {
+            videoRef.current.srcObject = remoteStream as any;
+            // Keep muted for autoplay; user can unmute via controls
+            videoRef.current.muted = true;
+            videoRef.current.autoplay = true;
+            videoRef.current.controls = true;
+            videoRef.current.play().catch(() => {});
+          }
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate && streamSocketRef.current) {
+            streamSocketRef.current.emit('webrtc-ice-candidate', {
+              roomId: selectedTokenId,
+              candidate: event.candidate,
+              target: fromId
+            });
+          }
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+        // Drain buffered ICE candidates (from streamer) now that remoteDescription is set
+        const pend = pendingIceRef.current.get(fromId);
+        if (pend && pend.length) {
+          for (const c of pend) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+          }
+          pendingIceRef.current.delete(fromId);
+        }
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        // Send answer back to streamer
+        socket.emit('webrtc-answer', {
+          roomId: selectedTokenId,
+          answer,
+          target: fromId,
+        });
+
+        setIsLive(true);
+      } catch (err) {
+        console.error('Error handling offer as viewer:', err);
       }
     });
 
     return () => {
-      socket.disconnect();
-      streamSocketRef.current = null;
+      try {
+        peerConnectionsRef.current.forEach(pc => pc.close());
+        peerConnectionsRef.current.clear();
+        if (remoteStreamRef.current) {
+          remoteStreamRef.current.getTracks().forEach(t => t.stop());
+          remoteStreamRef.current = null;
+        }
+      } finally {
+        socket.disconnect();
+        streamSocketRef.current = null;
+      }
     };
-  }, [streamMode, selectedTokenId, address]);
+  }, [streamMode, selectedTokenId, address, isStreaming]);
 
   // Active tokens by this creator (existing)
   const { data: activeInfos } = useReadContract({
@@ -133,6 +295,16 @@ export default function GoLivePage() {
     args: selectedTokenId ? [BigInt(selectedTokenId)] : undefined,
   });
 
+  const isCreator = useMemo(() => {
+    try {
+      const creator = (selectedInfo as any)?.creator as string | undefined;
+      if (!creator || !address) return false;
+      return creator.toLowerCase() === address.toLowerCase();
+    } catch {
+      return false;
+    }
+  }, [selectedInfo, address]);
+
   // Cleanup webcam on unmount (existing)
   useEffect(() => {
     return () => {
@@ -142,21 +314,45 @@ export default function GoLivePage() {
     };
   }, [mediaStream]);
 
-  // NEW: Create peer connection for streaming
-  const createPeerConnection = (viewerId: string) => {
-    const peerConnection = new RTCPeerConnection(rtcConfig);
-    
-    peerConnection.onicecandidate = (event) => {
+  // NEW: Create peer connection for a viewer (streamer side)
+  const createPeerConnectionForViewer = (viewerId: string) => {
+    const pc = new RTCPeerConnection(rtcConfig);
+
+    pc.onicecandidate = (event) => {
       if (event.candidate && streamSocketRef.current) {
         streamSocketRef.current.emit('webrtc-ice-candidate', {
           roomId: selectedTokenId,
           candidate: event.candidate,
-          target: viewerId
+          target: viewerId,
         });
       }
     };
 
-    return peerConnection;
+    peerConnectionsRef.current.set(viewerId, pc);
+    return pc;
+  };
+
+  const offerToViewer = async (viewerId: string) => {
+    if (!mediaStream || !streamSocketRef.current) return;
+    let pc = peerConnectionsRef.current.get(viewerId);
+    if (!pc) pc = createPeerConnectionForViewer(viewerId);
+
+    // Add local tracks (avoid duplicates by checking senders)
+    const tracks = mediaStream.getTracks();
+    const existing = pc.getSenders().map(s => s.track).filter(Boolean) as MediaStreamTrack[];
+    tracks.forEach(track => {
+      if (!existing.includes(track)) pc!.addTrack(track, mediaStream);
+    });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Send targeted offer to viewer
+    streamSocketRef.current.emit('webrtc-offer', {
+      roomId: selectedTokenId,
+      offer,
+      target: viewerId,
+    });
   };
 
   // NEW: Start WebRTC streaming
@@ -220,38 +416,7 @@ export default function GoLivePage() {
     notification.success("Stream stopped");
   };
 
-  // NEW: Send offer to viewers
-  const sendOfferToViewers = async () => {
-    if (!mediaStream || !streamSocketRef.current) return;
-
-    try {
-      const peerConnection = createPeerConnection('broadcast');
-      
-      // Add local stream tracks
-      mediaStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, mediaStream);
-      });
-
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-
-      // Broadcast offer to all viewers
-      streamSocketRef.current.emit('webrtc-offer', {
-        roomId: selectedTokenId,
-        offer
-      });
-
-    } catch (error) {
-      console.error('Error sending offer:', error);
-    }
-  };
-
-  // Send offers when viewers join
-  useEffect(() => {
-    if (isStreaming && viewerCount > 1) {
-      setTimeout(sendOfferToViewers, 1000);
-    }
-  }, [isStreaming, viewerCount]);
+  // Viewer offers are now sent per viewer on 'viewer-joined' event from server.
 
   // Existing webcam functions (unchanged)
   const startWebcam = async () => {
@@ -289,19 +454,25 @@ export default function GoLivePage() {
     }
   };
 
-  // Extract YouTube video ID from common URL shapes (existing)
+  // Extract YouTube video ID from common URL shapes (extended)
   const getYouTubeId = (url: string): string | null => {
     try {
       const u = new URL(url);
-      if (u.hostname === "youtu.be") {
+      const host = u.hostname.replace(/^www\./, "");
+      if (host === "youtu.be") {
         return u.pathname.slice(1) || null;
       }
-      if (u.hostname.includes("youtube.com")) {
+      if (host.includes("youtube.com")) {
+        // 1) watch?v=
         const v = u.searchParams.get("v");
         if (v) return v;
         const parts = u.pathname.split("/").filter(Boolean);
+        // 2) /embed/{id}
         const embedIdx = parts.indexOf("embed");
         if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1];
+        // 3) /live/{id}
+        const liveIdx = parts.indexOf("live");
+        if (liveIdx >= 0 && parts[liveIdx + 1]) return parts[liveIdx + 1];
       }
       return null;
     } catch {
@@ -333,7 +504,10 @@ export default function GoLivePage() {
                 <h1 className="text-3xl font-extrabold">Go Live</h1>
                 <p className="text-xs opacity-70 uppercase tracking-wider">Start streaming with your StreamNFT</p>
               </div>
-              <div className="flex flex-col md:flex-row gap-2 items-stretch">
+              {/* Hide controls for viewers (non-creators) */}
+              {isCreator && (
+                <div className="flex flex-col md:flex-row gap-2 items-stretch">
+              
                 <select
                   className="select select-bordered min-w-[200px]"
                   value={selectedTokenId}
@@ -373,12 +547,32 @@ export default function GoLivePage() {
 
                 {/* Controls based on mode - UPDATED */}
                 {streamMode === "youtube" ? (
-                  <input
-                    className="input input-bordered md:w-80"
-                    placeholder="Paste YouTube link"
-                    value={youtubeUrl}
-                    onChange={e => setYoutubeUrl(e.target.value)}
-                  />
+                  <div className="flex gap-2 items-center">
+                    {isCreator && (
+                      <>
+                        <input
+                          className="input input-bordered md:w-80"
+                          placeholder="Paste YouTube link (watch, youtu.be, or live)"
+                          value={youtubeUrl}
+                          onChange={e => setYoutubeUrl(e.target.value)}
+                        />
+                        {!isLive || liveType !== "youtube" ? (
+                          <button className="btn btn-primary" disabled={!youtubeId || !selectedTokenId}
+                            onClick={() => streamSocketRef.current?.emit('start-youtube', { roomId: selectedTokenId, youtubeId })}
+                          >
+                            🔴 Start YouTube
+                          </button>
+                        ) : (
+                          <button className="btn btn-error" onClick={() => streamSocketRef.current?.emit('stop-stream', { roomId: selectedTokenId })}>
+                            ⏹️ Stop YouTube
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {!isCreator && (
+                      <div className="text-xs opacity-70">The streamer controls the YouTube source</div>
+                    )}
+                  </div>
                 ) : streamMode === "stream" ? (
                   <div className="flex gap-2">
                     {!isStreaming ? (
@@ -405,7 +599,8 @@ export default function GoLivePage() {
                     </button>
                   )
                 )}
-              </div>
+                </div>
+              )}
             </div>
 
             {/* If no active token, quick create form (existing) */}
@@ -426,37 +621,36 @@ export default function GoLivePage() {
 
             {/* Video Player - UPDATED */}
             <div className="relative aspect-video w-full border-4 border-black">
-              {streamMode === "youtube" ? (
-                youtubeId ? (
-                  <iframe
-                    className="w-full h-full"
-                    src={`https://www.youtube.com/embed/${youtubeId}?autoplay=1&mute=1&playsinline=1`}
+              {(liveType === "youtube" && isLive && liveYoutubeId) ? (
+                <iframe
+                  className="w-full h-full"
+                  src={`https://www.youtube.com/embed/${liveYoutubeId}?autoplay=1&mute=1&playsinline=1`}
                     title="YouTube player"
                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                     referrerPolicy="strict-origin-when-cross-origin"
                     allowFullScreen
                   />
-                ) : (
+                ) : (streamMode === "youtube" ? (
                   <div className="w-full h-full flex items-center justify-center text-center p-6">
                     <div>
                       <div className="text-lg font-bold">Paste a valid YouTube URL to start</div>
-                      <div className="text-xs opacity-70 mt-2">Supports youtube.com/watch?v=… and youtu.be/…</div>
+                      <div className="text-xs opacity-70 mt-2">Supports youtube.com/watch?v=…, youtu.be/…, and youtube.com/live/…</div>
                     </div>
                   </div>
-                )
-              ) : (
-                <video
+                ) : (
+                  <video
                   ref={videoRef}
                   className="w-full h-full bg-black"
-                  controls={streamMode !== "stream"}
+                  controls={streamMode !== "stream" || (!isStreaming && isLive)}
                   playsInline
-                  muted={usingWebcam || isStreaming}
+                  autoPlay={streamMode === "stream"}
+                  muted={streamMode === "stream" ? true : (usingWebcam || isStreaming)}
                   style={{ transform: (streamMode === "stream" && isStreaming) ? 'scaleX(-1)' : 'none' }}
                 />
-              )}
+              ))}
 
               {/* Stream overlay - NEW */}
-              {streamMode === "stream" && isStreaming && (
+              {(streamMode === "stream") && (isStreaming || isLive) && (
                 <div className="absolute top-4 left-4 flex gap-2">
                   <div className="badge badge-error gap-2">
                     <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
@@ -467,7 +661,7 @@ export default function GoLivePage() {
               )}
 
               {/* No stream message */}
-              {streamMode === "stream" && !isStreaming && (
+              {streamMode === "stream" && !isStreaming && !isLive && (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75">
                   <div className="text-center text-white">
                     <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
