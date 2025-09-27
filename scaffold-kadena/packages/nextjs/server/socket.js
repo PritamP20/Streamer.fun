@@ -235,6 +235,28 @@ io.on("connection", socket => {
     }
   });
 
+  // Relay market events (polymarket bot)
+  socket.on("market-created", ({ roomId, marketId, question }) => {
+    const room = String(roomId || currentRoom || "lobby");
+    io.to(room).emit("market-created", { marketId, question });
+    io.to(room).emit("message", {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      author: "polymarket-bot",
+      text: `New market started: ${question}`,
+      at: Date.now(),
+    });
+  });
+  socket.on("market-resolved", ({ roomId, marketId, outcome }) => {
+    const room = String(roomId || currentRoom || "lobby");
+    io.to(room).emit("market-resolved", { marketId, outcome });
+    io.to(room).emit("message", {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      author: "polymarket-bot",
+      text: `Market #${marketId} resolved: ${outcome ? 'YES' : 'NO'}`,
+      at: Date.now(),
+    });
+  });
+
   // Query multiple stream statuses without joining rooms
   socket.on("get-stream-status", (payload, cb) => {
     try {

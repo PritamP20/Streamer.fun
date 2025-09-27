@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
+import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract, usePublicClient, useBlockNumber } from "wagmi";
 import { useScaffoldContract } from "~~/hooks/scaffold-eth";
+import { useScaffoldReadContract, useScaffoldWriteContract } from "~~/hooks/scaffold-eth";
 import { notification } from "~~/utils/scaffold-eth";
 import { io, Socket } from "socket.io-client";
 import { useSearchParams } from "next/navigation";
+import { parseEther } from "viem";
 
 export default function GoLivePage() {
   const { address } = useAccount();
@@ -24,6 +26,9 @@ export default function GoLivePage() {
   const [isLive, setIsLive] = useState(false); // stream live status for viewers
   const [liveType, setLiveType] = useState<"webrtc" | "youtube" | null>(null);
   const [liveYoutubeId, setLiveYoutubeId] = useState<string | null>(null);
+  // Yes/No market state (standalone)
+  const [activeMarketId, setActiveMarketId] = useState<number | null>(null);
+  const [activeMarketQ, setActiveMarketQ] = useState<string>("");
   const [viewerCount, setViewerCount] = useState(0);
   const streamSocketRef = useRef<Socket | null>(null);
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
@@ -122,6 +127,17 @@ export default function GoLivePage() {
       setIsLive(false);
       setLiveType(null);
       setLiveYoutubeId(null);
+    });
+
+    // Market events relay
+    socket.on("market-created", ({ marketId, question }: { marketId: number; question: string }) => {
+      setActiveMarketId(Number(marketId));
+      setActiveMarketQ(question || "");
+    });
+    socket.on("market-resolved", ({ marketId }: { marketId: number; outcome: boolean }) => {
+      if (activeMarketId === Number(marketId)) {
+        // trigger any local refresh if needed
+      }
     });
 
     socket.on("viewer-count", (count: number) => {
@@ -482,6 +498,40 @@ export default function GoLivePage() {
 
   const youtubeId = useMemo(() => getYouTubeId(youtubeUrl), [youtubeUrl]);
 
+  // Yes/No market create controls (streamer) — multi-chain via scaffold-eth
+  const { writeContractAsync: yesNoCreate, isMining: isCreatingPoll } = useScaffoldWriteContract({ contractName: "YesNoMarket" });
+  const { data: nextMarketId } = useScaffoldReadContract({ contractName: "YesNoMarket", functionName: "nextMarketId" });
+  const [pollCreateBump, setPollCreateBump] = useState(0);
+
+  const startYesNoPoll = async (q: string) => {
+    if (!selectedTokenId) {
+      notification.error("Select a StreamNFT/room first");
+      return;
+    }
+    try {
+      await yesNoCreate({ functionName: "createMarket", args: [q, 90n, 500n] });
+      setActiveMarketQ(q);
+      setPollCreateBump(b => b + 1);
+    } catch (e) {
+      notification.error("Failed to create market");
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    // After creation, compute new marketId = nextMarketId - 1 and broadcast
+    if (!pollCreateBump) return;
+    const nm = nextMarketId ? Number(nextMarketId as any) : 0;
+    if (nm > 0) {
+      const mid = nm - 1;
+      setActiveMarketId(mid);
+      if (streamSocketRef.current) {
+        streamSocketRef.current.emit('market-created', { roomId: selectedTokenId, marketId: mid, question: activeMarketQ });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollCreateBump, nextMarketId]);
+
   // Switch mode safely (updated to handle streaming)
   const switchMode = (mode: "webcam" | "youtube" | "stream") => {
     if (mode !== "webcam" && usingWebcam && !isStreaming) {
@@ -574,7 +624,7 @@ export default function GoLivePage() {
                     )}
                   </div>
                 ) : streamMode === "stream" ? (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 items-center">
                     {!isStreaming ? (
                       <button className="btn btn-primary" onClick={startWebRTCStream}>
                         🔴 Go Live
@@ -586,6 +636,15 @@ export default function GoLivePage() {
                         </button>
                         <div className="badge badge-success">{viewerCount} viewers</div>
                       </>
+                    )}
+                    {isCreator && (
+                      <button
+                        className="btn btn-outline"
+                        disabled={isCreatingPoll}
+                        onClick={() => startYesNoPoll("Will the streamer win this game?")}
+                      >
+                        Start Yes/No Poll
+                      </button>
                     )}
                   </div>
                 ) : (
@@ -691,6 +750,11 @@ export default function GoLivePage() {
               viewerAddress={address || undefined}
             />
 
+            {/* Market pool details (Yes/No) */}
+            <YesNoMarketPanel
+              marketId={activeMarketId}
+            />
+
             {/* Selected NFT Info (existing) */}
             {selectedInfo && (
               <div className="mt-4 p-3 border-4 border-black">
@@ -718,7 +782,12 @@ export default function GoLivePage() {
 
         {/* Right: Chat area (existing) */}
         <div className="col-span-12 lg:col-span-4">
-          <LiveChatPanel roomId={selectedTokenId || "lobby"} tokenId={selectedTokenId} />
+          <LiveChatPanel
+            roomId={selectedTokenId || "lobby"}
+            tokenId={selectedTokenId}
+            marketId={activeMarketId}
+            marketQuestion={activeMarketQ}
+          />
         </div>
       </div>
     </div>
@@ -797,7 +866,7 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
         <div className="flex items-center gap-3">
           <img
             alt="nft"
-            src={(info as any)?.imageURI || ""}
+            src={(info as any)?.imageURI || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%230B0B0B'/%3E%3C/svg%3E"}
             className="w-14 h-14 object-cover"
             onError={e => { (e.currentTarget as HTMLImageElement).src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%230B0B0B'/%3E%3C/svg%3E"; }}
           />
@@ -823,11 +892,151 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
   );
 }
 
-function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }) {
+function YesNoMarketPanel({ marketId }: { marketId: number | null }) {
+  const { address } = useAccount();
+  const publicClient = usePublicClient();
+  const { data: blockNumber } = useBlockNumber({ watch: true });
+  const [chainNowMs, setChainNowMs] = useState<number>(0);
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!publicClient) return;
+        const b = await publicClient.getBlock();
+        // @ts-ignore wagmi/viem timestamp is bigint
+        setChainNowMs(Number(b.timestamp) * 1000);
+      } catch {}
+    })();
+  }, [publicClient, blockNumber]);
+
+  const { data: market } = useScaffoldReadContract({
+    contractName: "YesNoMarket",
+    functionName: "getMarket",
+    args: marketId != null ? [BigInt(marketId)] : undefined,
+  });
+  const { data: userStake } = useScaffoldReadContract({
+    contractName: "YesNoMarket",
+    functionName: "getUserStake",
+    args: marketId != null && address ? [BigInt(marketId), address] : undefined,
+  });
+  const { writeContractAsync: yesNoWrite, isMining: isActing } = useScaffoldWriteContract({ contractName: "YesNoMarket" });
+  const isActionConfirming = false;
+
+  if (marketId == null) return null;
+
+  const m = market as any;
+  const streamer = m?.[0] as string | undefined;
+  const question = m?.[1] as string | undefined;
+  const endTime = m?.[2] as bigint | undefined;
+  const resolved = m?.[3] as boolean | undefined;
+  const outcome = m?.[4] as boolean | undefined;
+  const yesPool = m?.[5] as bigint | undefined;
+  const noPool = m?.[6] as bigint | undefined;
+  const feeBps = m?.[7] as bigint | undefined;
+  const yesCount = m?.[8] as bigint | undefined;
+  const noCount = m?.[9] as bigint | undefined;
+  const totalPool = m?.[10] as bigint | undefined;
+  const isActive = m?.[11] as boolean | undefined;
+
+  const ys = (userStake as any)?.[0] as bigint | undefined;
+  const ns = (userStake as any)?.[1] as bigint | undefined;
+  const iAmStreamer = !!(streamer && address && streamer.toLowerCase() === address.toLowerCase());
+  const ended = endTime ? chainNowMs >= Number(endTime) * 1000 : false;
+
+  return (
+    <div className="mt-4 border-4 border-black p-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-xs uppercase opacity-70">Polymarket Bot</div>
+          <div className="font-bold">{question || "Yes / No market"}</div>
+          <div className="text-xs opacity-60">Fee: {feeBps ? Number(feeBps) / 100 : 0}% • Ends {endTime ? new Date(Number(endTime) * 1000).toLocaleString() : "-"}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-xs opacity-70 uppercase">Total Pool</div>
+          <div className="text-lg font-extrabold">{totalPool ? (Number(totalPool) / 1e18).toFixed(4) : "0.0000"} KDA</div>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="border-4 border-black p-3">
+          <div className="text-xs uppercase opacity-60">YES</div>
+          <div className="text-xl font-extrabold">{yesPool ? (Number(yesPool) / 1e18).toFixed(4) : "0.0000"} KDA</div>
+          <div className="text-xs opacity-60">Voters: {yesCount ? Number(yesCount) : 0}</div>
+        </div>
+        <div className="border-4 border-black p-3">
+          <div className="text-xs uppercase opacity-60">NO</div>
+          <div className="text-xl font-extrabold">{noPool ? (Number(noPool) / 1e18).toFixed(4) : "0.0000"} KDA</div>
+          <div className="text-xs opacity-60">Voters: {noCount ? Number(noCount) : 0}</div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex items-center justify-between">
+        <div className="text-xs">Your stake — YES: {(ys || 0n).toString()} wei • NO: {(ns || 0n).toString()} wei</div>
+        {resolved ? (
+          <div className="badge badge-outline">Resolved: {outcome ? "YES" : "NO"}</div>
+        ) : isActive ? (
+          <div className="badge badge-success">Active</div>
+        ) : (
+          <div className="badge">Ended</div>
+        )}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {iAmStreamer && !resolved && ended && (
+          <>
+            <button
+              className="btn btn-sm btn-primary"
+              disabled={isActing || isActionConfirming}
+              onClick={() => {
+                yesNoWrite({ functionName: "resolve", args: [BigInt(marketId), true] });
+                // notify room
+              }}
+            >
+              Resolve YES
+            </button>
+            <button
+              className="btn btn-sm btn-error"
+              disabled={isActing || isActionConfirming}
+              onClick={() => {
+                yesNoWrite({ functionName: "resolve", args: [BigInt(marketId), false] });
+              }}
+            >
+              Resolve NO
+            </button>
+          </>
+        )}
+        {resolved && (
+          <>
+            <button
+              className="btn btn-sm btn-outline"
+              disabled={isActing || isActionConfirming}
+              onClick={() => yesNoWrite({ functionName: "claim", args: [BigInt(marketId)] })}
+            >
+              Claim Winnings
+            </button>
+            {iAmStreamer && (
+              <button
+                className="btn btn-sm"
+                disabled={isActing || isActionConfirming}
+                onClick={() => yesNoWrite({ functionName: "claimStreamerFee", args: [BigInt(marketId)] })}
+              >
+                Claim Streamer Fee
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LiveChatPanel({ roomId, tokenId, marketId, marketQuestion }: { roomId: string; tokenId?: string; marketId?: number | null; marketQuestion?: string; }) {
   type ChatMsg = { id: string; author: string; text: string; at: number };
   const { address } = useAccount();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [text, setText] = useState("");
+  // Pinned poll stake amount (KDA)
+  const [stakeAmt, setStakeAmt] = useState<string>("0.01");
+  const { writeContractAsync: yesNoWrite, isMining: isVoting } = useScaffoldWriteContract({ contractName: "YesNoMarket" });
+  const isVoteConfirming = false;
   const listRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
@@ -974,6 +1183,50 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
           <div className="text-xs opacity-60">No messages yet — be the first to say hi!</div>
         )}
       </div>
+      {/* Pinned poll (if any) */}
+      {marketId != null && (
+        <div className="border-t-4 border-black p-3 bg-base-200">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-xs uppercase opacity-60">Polymarket Bot</div>
+              <div className="font-bold">{marketQuestion || "Yes / No question"}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                step="0.001"
+                className="input input-bordered input-sm w-28"
+                value={stakeAmt}
+                onChange={e => setStakeAmt(e.target.value)}
+              />
+              <button
+                className="btn btn-sm btn-outline"
+                disabled={isVoting || isVoteConfirming}
+                onClick={() => {
+                  if (marketId == null) return;
+                  const val = parseEther(String(Math.max(0, Number(stakeAmt) || 0)));
+                  yesNoWrite({ functionName: "stake", args: [BigInt(marketId), true], value: val });
+                }}
+              >
+                Yes
+              </button>
+              <button
+                className="btn btn-sm btn-outline"
+                disabled={isVoting || isVoteConfirming}
+                onClick={() => {
+                  if (marketId == null) return;
+                  const val = parseEther(String(Math.max(0, Number(stakeAmt) || 0)));
+                  yesNoWrite({ functionName: "stake", args: [BigInt(marketId), false], value: val });
+                }}
+              >
+                No
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="p-3 border-t-4 border-black flex gap-2">
         <input
           className="input input-bordered flex-1"
