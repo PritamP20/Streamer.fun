@@ -13,16 +13,32 @@ export default function GoLivePage() {
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<string>("");
 
-  // mode: webcam | youtube
-  const [streamMode, setStreamMode] = useState<"webcam" | "youtube">("webcam");
+  // mode: webcam | youtube | stream (NEW)
+  const [streamMode, setStreamMode] = useState<"webcam" | "youtube" | "stream">("webcam");
   const [youtubeUrl, setYoutubeUrl] = useState("");
+
+  // NEW: WebRTC streaming state
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [viewerCount, setViewerCount] = useState(0);
+  const streamSocketRef = useRef<Socket | null>(null);
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
 
   const { data: streamNFT } = useScaffoldContract({ contractName: "StreamNFT" });
   const { data: marketplace } = useScaffoldContract({ contractName: "Marketplace" });
 
-  // Interaction overlay
+  // Interaction overlay (existing)
   const [interactBanner, setInteractBanner] = useState<string | null>(null);
   const overlaySocketRef = useRef<Socket | null>(null);
+
+  // NEW: WebRTC configuration
+  const rtcConfig = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
+
+  // Existing overlay socket (unchanged)
   useEffect(() => {
     const url = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4001";
     const s = io(url, { transports: ["websocket", "polling"] });
@@ -41,7 +57,49 @@ export default function GoLivePage() {
     };
   }, [selectedTokenId, address]);
 
-  // Active tokens by this creator
+  // NEW: WebRTC streaming socket
+  useEffect(() => {
+    if (streamMode !== "stream" || !selectedTokenId) return;
+
+    const url = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4001";
+    streamSocketRef.current = io(url, { transports: ["websocket", "polling"] });
+    const socket = streamSocketRef.current;
+
+    socket.on("connect", () => {
+      console.log("Connected to streaming server");
+      socket.emit("join", { 
+        roomId: selectedTokenId, 
+        author: address?.slice(0, 8) || "streamer",
+        userAddress: address 
+      });
+    });
+
+    socket.on("viewer-count", (count: number) => {
+      setViewerCount(count);
+    });
+
+    // WebRTC signaling
+    socket.on("webrtc-answer", async (data: { answer: RTCSessionDescriptionInit; from: string }) => {
+      const peerConnection = peerConnectionsRef.current.get(data.from);
+      if (peerConnection) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+      }
+    });
+
+    socket.on("webrtc-ice-candidate", async (data: { candidate: RTCIceCandidateInit; from: string }) => {
+      const peerConnection = peerConnectionsRef.current.get(data.from);
+      if (peerConnection) {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
+    });
+
+    return () => {
+      socket.disconnect();
+      streamSocketRef.current = null;
+    };
+  }, [streamMode, selectedTokenId, address]);
+
+  // Active tokens by this creator (existing)
   const { data: activeInfos } = useReadContract({
     address: streamNFT?.address,
     abi: streamNFT?.abi,
@@ -53,11 +111,11 @@ export default function GoLivePage() {
     return (activeInfos as any[]).filter(i => i.creator?.toLowerCase?.() === address.toLowerCase());
   }, [activeInfos, address]);
 
-  // Mint inline if needed
+  // Mint inline if needed (existing)
   const { writeContract: writeMint, data: mintHash, isPending: isMinting } = useWriteContract();
   const { isLoading: isMintConfirming } = useWaitForTransactionReceipt({ hash: mintHash });
 
-  // Fetch NFTs created by this address
+  // Fetch NFTs created by this address (existing)
   const { data: creatorTokenIds } = useReadContract({
     address: streamNFT?.address,
     abi: streamNFT?.abi,
@@ -67,7 +125,7 @@ export default function GoLivePage() {
 
   const tokenIds = useMemo(() => (creatorTokenIds as bigint[] | undefined) || [], [creatorTokenIds]);
 
-  // Fetch info of selected token
+  // Fetch info of selected token (existing)
   const { data: selectedInfo } = useReadContract({
     address: streamNFT?.address,
     abi: streamNFT?.abi,
@@ -75,15 +133,127 @@ export default function GoLivePage() {
     args: selectedTokenId ? [BigInt(selectedTokenId)] : undefined,
   });
 
+  // Cleanup webcam on unmount (existing)
   useEffect(() => {
     return () => {
-      // Cleanup webcam on unmount
       if (mediaStream) {
         mediaStream.getTracks().forEach(t => t.stop());
       }
     };
   }, [mediaStream]);
 
+  // NEW: Create peer connection for streaming
+  const createPeerConnection = (viewerId: string) => {
+    const peerConnection = new RTCPeerConnection(rtcConfig);
+    
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate && streamSocketRef.current) {
+        streamSocketRef.current.emit('webrtc-ice-candidate', {
+          roomId: selectedTokenId,
+          candidate: event.candidate,
+          target: viewerId
+        });
+      }
+    };
+
+    return peerConnection;
+  };
+
+  // NEW: Start WebRTC streaming
+  const startWebRTCStream = async () => {
+    try {
+      if (!selectedTokenId) {
+        notification.error("Select or create a StreamNFT before going live");
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 }
+        },
+        audio: true
+      });
+
+      setMediaStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream as any;
+        await videoRef.current.play();
+      }
+
+      // Notify server that stream started
+      streamSocketRef.current?.emit('start-stream', { 
+        roomId: selectedTokenId,
+        title: `Stream #${selectedTokenId}`
+      });
+
+      setIsStreaming(true);
+      setUsingWebcam(true);
+      notification.success("Live stream started!");
+
+    } catch (error) {
+      console.error('Error starting WebRTC stream:', error);
+      notification.error("Failed to start stream");
+    }
+  };
+
+  // NEW: Stop WebRTC streaming
+  const stopWebRTCStream = () => {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(track => track.stop());
+    }
+
+    // Close all peer connections
+    peerConnectionsRef.current.forEach(pc => pc.close());
+    peerConnectionsRef.current.clear();
+
+    setMediaStream(null);
+    setIsStreaming(false);
+    setUsingWebcam(false);
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+
+    streamSocketRef.current?.emit('stop-stream', { roomId: selectedTokenId });
+    notification.success("Stream stopped");
+  };
+
+  // NEW: Send offer to viewers
+  const sendOfferToViewers = async () => {
+    if (!mediaStream || !streamSocketRef.current) return;
+
+    try {
+      const peerConnection = createPeerConnection('broadcast');
+      
+      // Add local stream tracks
+      mediaStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, mediaStream);
+      });
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      // Broadcast offer to all viewers
+      streamSocketRef.current.emit('webrtc-offer', {
+        roomId: selectedTokenId,
+        offer
+      });
+
+    } catch (error) {
+      console.error('Error sending offer:', error);
+    }
+  };
+
+  // Send offers when viewers join
+  useEffect(() => {
+    if (isStreaming && viewerCount > 1) {
+      setTimeout(sendOfferToViewers, 1000);
+    }
+  }, [isStreaming, viewerCount]);
+
+  // Existing webcam functions (unchanged)
   const startWebcam = async () => {
     try {
       if (!selectedTokenId) {
@@ -104,7 +274,6 @@ export default function GoLivePage() {
       notification.success("Webcam started");
     } catch (e: any) {
       notification.error("Failed to access webcam");
-      // eslint-disable-next-line no-console
       console.error(e);
     }
   };
@@ -120,7 +289,7 @@ export default function GoLivePage() {
     }
   };
 
-  // Extract YouTube video ID from common URL shapes
+  // Extract YouTube video ID from common URL shapes (existing)
   const getYouTubeId = (url: string): string | null => {
     try {
       const u = new URL(url);
@@ -130,7 +299,6 @@ export default function GoLivePage() {
       if (u.hostname.includes("youtube.com")) {
         const v = u.searchParams.get("v");
         if (v) return v;
-        // also support /embed/{id}
         const parts = u.pathname.split("/").filter(Boolean);
         const embedIdx = parts.indexOf("embed");
         if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1];
@@ -143,10 +311,13 @@ export default function GoLivePage() {
 
   const youtubeId = useMemo(() => getYouTubeId(youtubeUrl), [youtubeUrl]);
 
-  // Switch mode safely (stop webcam when leaving webcam mode)
-  const switchMode = (mode: "webcam" | "youtube") => {
-    if (mode === "youtube" && usingWebcam) {
+  // Switch mode safely (updated to handle streaming)
+  const switchMode = (mode: "webcam" | "youtube" | "stream") => {
+    if (mode !== "webcam" && usingWebcam && !isStreaming) {
       stopWebcam();
+    }
+    if (mode !== "stream" && isStreaming) {
+      stopWebRTCStream();
     }
     setStreamMode(mode);
   };
@@ -178,22 +349,29 @@ export default function GoLivePage() {
                   ))}
                 </select>
 
-                {/* Mode switch */}
+                {/* Mode switch - UPDATED */}
                 <div className="btn-group">
                   <button
-                    className={`btn ${streamMode === "webcam" ? "btn-primary" : "btn-outline"}`}
+                    className={`btn btn-sm ${streamMode === "webcam" ? "btn-primary" : "btn-outline"}`}
                     onClick={() => switchMode("webcam")}
                   >
-                    Go Live (Webcam)
+                    Webcam
                   </button>
                   <button
-                    className={`btn ${streamMode === "youtube" ? "btn-primary" : "btn-outline"}`}
+                    className={`btn btn-sm ${streamMode === "stream" ? "btn-primary" : "btn-outline"}`}
+                    onClick={() => switchMode("stream")}
+                  >
+                    Live Stream
+                  </button>
+                  <button
+                    className={`btn btn-sm ${streamMode === "youtube" ? "btn-primary" : "btn-outline"}`}
                     onClick={() => switchMode("youtube")}
                   >
-                    YouTube URL
+                    YouTube
                   </button>
                 </div>
 
+                {/* Controls based on mode - UPDATED */}
                 {streamMode === "youtube" ? (
                   <input
                     className="input input-bordered md:w-80"
@@ -201,6 +379,21 @@ export default function GoLivePage() {
                     value={youtubeUrl}
                     onChange={e => setYoutubeUrl(e.target.value)}
                   />
+                ) : streamMode === "stream" ? (
+                  <div className="flex gap-2">
+                    {!isStreaming ? (
+                      <button className="btn btn-primary" onClick={startWebRTCStream}>
+                        🔴 Go Live
+                      </button>
+                    ) : (
+                      <>
+                        <button className="btn btn-error" onClick={stopWebRTCStream}>
+                          ⏹️ Stop Stream
+                        </button>
+                        <div className="badge badge-success">{viewerCount} viewers</div>
+                      </>
+                    )}
+                  </div>
                 ) : (
                   !usingWebcam ? (
                     <button className="btn btn-primary" onClick={startWebcam}>
@@ -215,7 +408,7 @@ export default function GoLivePage() {
               </div>
             </div>
 
-            {/* If no active token, quick create form */}
+            {/* If no active token, quick create form (existing) */}
             {myActiveTokens.length === 0 && (
               <QuickMintForm onMint={async (name, desc, image, durationHrs) => {
                 try {
@@ -231,7 +424,7 @@ export default function GoLivePage() {
               }} isMinting={isMinting || isMintConfirming} />
             )}
 
-            {/* Video Player */}
+            {/* Video Player - UPDATED */}
             <div className="relative aspect-video w-full border-4 border-black">
               {streamMode === "youtube" ? (
                 youtubeId ? (
@@ -255,11 +448,38 @@ export default function GoLivePage() {
                 <video
                   ref={videoRef}
                   className="w-full h-full bg-black"
-                  controls
+                  controls={streamMode !== "stream"}
                   playsInline
-                  muted={usingWebcam}
+                  muted={usingWebcam || isStreaming}
+                  style={{ transform: (streamMode === "stream" && isStreaming) ? 'scaleX(-1)' : 'none' }}
                 />
               )}
+
+              {/* Stream overlay - NEW */}
+              {streamMode === "stream" && isStreaming && (
+                <div className="absolute top-4 left-4 flex gap-2">
+                  <div className="badge badge-error gap-2">
+                    <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                    LIVE
+                  </div>
+                  <div className="badge badge-neutral">{viewerCount} watching</div>
+                </div>
+              )}
+
+              {/* No stream message */}
+              {streamMode === "stream" && !isStreaming && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75">
+                  <div className="text-center text-white">
+                    <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                    <p className="text-lg">Ready to stream</p>
+                    <p className="text-sm opacity-75">Click "Go Live" to start broadcasting</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Interaction banner (existing) */}
               {interactBanner && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                   <div className="bg-neon-purple text-black font-extrabold p-4 border-4 border-black text-center uppercase">
@@ -269,7 +489,7 @@ export default function GoLivePage() {
               )}
             </div>
 
-            {/* Token panel under the player */}
+            {/* Token panel under the player (existing) */}
             <TokenPanel
               tokenId={selectedTokenId}
               streamNFT={{ address: streamNFT?.address as any, abi: streamNFT?.abi as any }}
@@ -277,11 +497,10 @@ export default function GoLivePage() {
               viewerAddress={address || undefined}
             />
 
-            {/* Selected NFT Info */}
+            {/* Selected NFT Info (existing) */}
             {selectedInfo && (
               <div className="mt-4 p-3 border-4 border-black">
                 <div className="flex items-center gap-3">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     alt="nft"
                     src={(selectedInfo as any).imageURI as string}
@@ -303,7 +522,7 @@ export default function GoLivePage() {
           </div>
         </div>
 
-        {/* Right: Chat area */}
+        {/* Right: Chat area (existing) */}
         <div className="col-span-12 lg:col-span-4">
           <LiveChatPanel roomId={selectedTokenId || "lobby"} tokenId={selectedTokenId} />
         </div>
@@ -312,6 +531,7 @@ export default function GoLivePage() {
   );
 }
 
+// Existing components (unchanged)
 function QuickMintForm({ onMint, isMinting }: { onMint: (name: string, desc: string, imageURI: string, durationHours: number) => Promise<void> | void; isMinting: boolean }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
@@ -343,12 +563,11 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
   const { data: frac } = useReadContract({ address: marketplace.address, abi: marketplace.abi, functionName: "getFractionalData", args: tid ? [tid] : undefined });
   const { data: userHours } = useReadContract({ address: marketplace.address, abi: marketplace.abi, functionName: "getUserHoursForToken", args: tid && viewerAddress ? [tid, viewerAddress] : undefined });
 
-  // Track totalHoursSold over time for a simple sparkline
   const [history, setHistory] = useState<{ t: number; v: number }[]>([]);
   useEffect(() => {
     let mounted = true;
     const pushPoint = () => {
-      const v = frac ? Number((frac as any)[3] as bigint) : 0; // totalHoursSold
+      const v = frac ? Number((frac as any)[3] as bigint) : 0;
       if (!mounted) return;
       setHistory(prev => [...prev.slice(-99), { t: Date.now(), v }]);
     };
@@ -357,7 +576,6 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
     return () => { mounted = false; clearInterval(id); };
   }, [frac]);
 
-  // Build sparkline path
   const Spark = () => {
     const W = 240, H = 60, P = 6;
     const data = history.length ? history : [{ t: 0, v: 0 }];
@@ -383,7 +601,6 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
     <div className="mt-4 border-4 border-black p-4">
       <div className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
         <div className="flex items-center gap-3">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             alt="nft"
             src={(info as any)?.imageURI || ""}
@@ -412,7 +629,6 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
   );
 }
 
-
 function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }) {
   type ChatMsg = { id: string; author: string; text: string; at: number };
   const { address } = useAccount();
@@ -421,7 +637,6 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
   const listRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
-  // marketplace data for token
   const { data: marketplace } = useScaffoldContract({ contractName: "Marketplace" });
   const { data: fractionalView } = useReadContract({
     address: marketplace?.address,
@@ -440,7 +655,6 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
   const { writeContract: writeBuy, data: buyHash, isPending: isBuying } = useWriteContract();
   const { isLoading: isBuyConfirming } = useWaitForTransactionReceipt({ hash: buyHash });
 
-  // Precompute cost for buying 1 hour
   const { data: buyCost } = useReadContract({
     address: marketplace?.address,
     abi: marketplace?.abi,
@@ -448,7 +662,6 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
     args: tokenId ? [BigInt(tokenId), 1n] : undefined,
   });
 
-  // Connect to socket.io
   useEffect(() => {
     const url = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4001";
     const s = io(url, { transports: ["websocket", "polling"] });
@@ -466,10 +679,8 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
       s.disconnect();
       socketRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-join when room changes
   useEffect(() => {
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit("join", { roomId, author: address || "streamer" });
@@ -523,7 +734,6 @@ function LiveChatPanel({ roomId, tokenId }: { roomId: string; tokenId?: string }
       });
     } catch (e) {
       notification.error("Buy hours failed");
-      // eslint-disable-next-line no-console
       console.error(e);
     }
   };
