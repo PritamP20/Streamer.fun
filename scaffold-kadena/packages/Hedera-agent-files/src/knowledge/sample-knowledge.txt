@@ -1,0 +1,73 @@
+Hedera Hashgraph Knowledge Base
+
+Hedera Hashgraph is a distributed ledger technology that provides a fast, fair, and secure platform for building decentralized applications. Here are the key aspects of Hedera:
+
+1. Consensus Algorithm
+Hedera uses a unique consensus algorithm called Hashgraph, which is based on the gossip protocol. This allows for high throughput (10,000+ transactions per second) and low latency (3-5 seconds finality). The algorithm is patented and provides Byzantine fault tolerance.
+
+2. Network Architecture
+Hedera operates as a public network with a governing council of up to 39 term-limited organizations. These organizations include major corporations like Google, IBM, Boeing, and others. The council ensures decentralization while maintaining network stability.
+
+3. Native Cryptocurrency
+HBAR is the native cryptocurrency of the Hedera network. It serves multiple purposes:
+- Network fees for transactions
+- Staking for network security
+- Payment for services
+- Governance participation
+
+4. Services Offered
+Hedera provides several services:
+- Cryptocurrency: HBAR token transfers
+- Smart Contracts: Solidity-compatible smart contracts
+- Consensus Service: Timestamping and ordering of events
+- Token Service: Creating and managing custom tokens
+- File Service: Decentralized file storage
+
+5. Transaction Costs
+Hedera offers predictable and low transaction costs:
+- Cryptocurrency transfers: $0.0001 USD
+- Smart contract calls: $0.05 USD
+- File storage: $0.10 per GB per month
+- Consensus service: $0.0001 per message
+
+6. Security Features
+- Asynchronous Byzantine Fault Tolerance (aBFT)
+- No proof-of-work mining (energy efficient)
+- Deterministic finality
+- Immutable transaction history
+- Built-in compliance tools
+
+7. Development Tools
+Hedera provides comprehensive development tools:
+- Hedera SDKs for multiple programming languages
+- Hedera Consensus Service (HCS) for event streaming
+- Hedera Token Service (HTS) for token creation
+- Smart contract development with Solidity
+- REST APIs for easy integration
+
+8. Use Cases
+Common use cases for Hedera include:
+- Supply chain tracking
+- Identity verification
+- Payment processing
+- Data integrity
+- Gaming and NFTs
+- DeFi applications
+- Enterprise solutions
+
+9. Network Information
+- Mainnet launched: September 2019
+- Testnet available for development
+- Network nodes operated by council members
+- Public network with permissioned consensus
+- Regular network upgrades and improvements
+
+10. Getting Started
+To start developing on Hedera:
+1. Create a Hedera account
+2. Get testnet HBAR from the faucet
+3. Install the Hedera SDK
+4. Connect to testnet or mainnet
+5. Start building your application
+
+This knowledge base covers the fundamental aspects of Hedera Hashgraph technology and its ecosystem.
