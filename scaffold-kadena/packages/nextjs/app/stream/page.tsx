@@ -639,7 +639,7 @@ export default function GoLivePage() {
                     )}
                     {isCreator && (
                       <button
-                        className="btn btn-outline"
+                        className="btn btn-sm btn-secondary"
                         disabled={isCreatingPoll}
                         onClick={() => startYesNoPoll("Will the streamer win this game?")}
                       >
@@ -780,14 +780,16 @@ export default function GoLivePage() {
           </div>
         </div>
 
-        {/* Right: Chat area (existing) */}
+        {/* Right: Chat area (scrollable, pinned height) */}
         <div className="col-span-12 lg:col-span-4">
-          <LiveChatPanel
-            roomId={selectedTokenId || "lobby"}
-            tokenId={selectedTokenId}
-            marketId={activeMarketId}
-            marketQuestion={activeMarketQ}
-          />
+          <div className="sticky top-4 h-[calc(100vh-180px)]">
+            <LiveChatPanel
+              roomId={selectedTokenId || "lobby"}
+              tokenId={selectedTokenId}
+              marketId={activeMarketId}
+              marketQuestion={activeMarketQ}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -861,7 +863,7 @@ function TokenPanel({ tokenId, streamNFT, marketplace, viewerAddress }: { tokenI
   if (!tokenId) return null;
 
   return (
-    <div className="mt-4 border-4 border-black p-4">
+    <div className="mt-4 border-4 border-black p-4 ">
       <div className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
         <div className="flex items-center gap-3">
           <img
@@ -943,7 +945,7 @@ function YesNoMarketPanel({ marketId }: { marketId: number | null }) {
   const ended = endTime ? chainNowMs >= Number(endTime) * 1000 : false;
 
   return (
-    <div className="mt-4 border-4 border-black p-4">
+    <div className="mt-4 border-4 border-black p-4 bg-blue-400">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="text-xs uppercase opacity-70">Polymarket Bot</div>
