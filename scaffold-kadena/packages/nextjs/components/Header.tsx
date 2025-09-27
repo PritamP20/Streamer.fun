@@ -21,6 +21,11 @@ export const menuLinks: HeaderMenuLink[] = [
     href: "/",
   },
   {
+    label: "Go Live",
+    href: "/stream",
+    icon: <span className="text-sm">📺</span>,
+  },
+  {
     label: "Buy Tokens",
     href: "/buy-tokens",
     icon: <span className="text-sm">🤑</span>,
@@ -29,11 +34,6 @@ export const menuLinks: HeaderMenuLink[] = [
     label: "Streamers",
     href: "/streamers",
     icon: <span className="text-sm">🎥</span>,
-  },
-  {
-    label: "Debug Contracts",
-    href: "/debug",
-    icon: <BugAntIcon className="h-4 w-4" />,
   },
 ];
 

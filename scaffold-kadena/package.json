@@ -49,6 +49,7 @@
     "next:lint": "yarn workspace @se-2/nextjs lint",
     "next:serve": "yarn workspace @se-2/nextjs serve",
     "start": "yarn workspace @se-2/nextjs dev",
+    "start:all": "concurrently -k -n NEXT,SOCKET -c magenta,cyan \"yarn workspace @se-2/nextjs dev\" \"node packages/nextjs/server/socket.js\"",
     "test": "yarn hardhat:test",
     "check:contracts": "yarn workspace @se-2/hardhat lint",
     "tidy:contracts": "yarn workspace @se-2/hardhat format",
@@ -75,6 +76,7 @@
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
+    "concurrently": "^9.1.2",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
     "prettier": "^3.5.3",
