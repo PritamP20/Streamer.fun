@@ -18,6 +18,15 @@ const config: HardhatUserConfig = {
     },
   },
 
+  networks: {
+    testnet: {
+      url: "https://evm-testnet.chainweb.com/chainweb/0.0/evm-testnet/chain/20/evm/rpc",
+      accounts: accounts,
+    },
+  },
+
+  defaultChainweb: "testnet",
+
   chainweb: {
     hardhat: {
       chains: 2,
